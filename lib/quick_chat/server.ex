@@ -1,124 +1,134 @@
 defmodule QuickChat.Server do
   use GenServer
 
-  # ===== #
-  # Setup #
-  # ===== #
+  @doc """
+  Set up GenServer
 
-  def init() do
-    room = Node.self()
-    log("Registered as #{name} in room #{room}", "#{name} in #{room}", "🔌", :green)
+  ... more text
 
-    {:ok, %QuickChat.Session{me: {name, room}}}
+  """
+  def init([owner]) do
+    log(nil, Node.self(), "🔌", :green)
+    {:ok, {owner, MapSet.new(), MapSet.new()}}
   end
 
-  def handle_info(unknown, status) do
-    log("Unknown message received: #{unknown}", "SYSTEM", "❗", :red)
-    {:noreply, status}
-  end
+  @doc """
+  Synchronous
 
-  # ==== #
-  # Sync #
-  # ==== #
+  ... more text
 
-  def handle_call({:broadcast, text}, from, %{me: {name, room}, nonces: nonces, peers: peers} = state) when from == self() do
-    log(text, "Me", "😃", :yellow)
+  """
+  def handle_call({:broadcast, text}, {from, _}, {owner, nonces, peers}) when from == owner do
+    log(text, "Me", "😎", :yellow)
 
     new_nonce = nonce()
-    forward(peers, {:msg, name, room, new_nonce, text}) # Broadcast to friends
+    forward(peers, {:msg, me(), new_nonce, text})
 
-    {
-      :noreply,
-      %{state | nonces: MapSet.put(nonces, new_nonce)}
-    }
+    {:reply, :ok, {owner, MapSet.put(nonces, new_nonce), peers}}
   end
 
-  def handle_call({:send_dm, to, text}, from, %{me: {name, room}, nonces: nonces} = state) when from == self() do
+  def handle_call({:send_dm, to, text}, {from, _}, {owner, nonces, peers}) when from == owner do
+    log(text, "Me (to #{to})", "🙈", :yellow)
+
     new_nonce = nonce()
-    GenServer.cast(to, {:msg, {name, room, new_nonce, text}}) # Broadcast to friends
+    GenServer.cast(address(to), {:dm, me(), new_nonce, text})
 
-    {
-      :noreply,
-      %{state | nonces: MapSet.put(nonces, new_nonce)}
-    }
+    unless MapSet.member?(peers, to) do
+      GenServer.cast(address(to), {:peers, peers})
+      forward(peers, {:newcomer, to})
+    end
+
+    {:reply, :ok, {owner, MapSet.put(nonces, new_nonce), MapSet.put(peers, to)}}
   end
 
-  def handle_call(:list_peers, %{peers: peers} = state), do: {:reply, peers, state}
+  # Public
+  def handle_call(:list_peers, _from, {_, _, peers} = session) do
+    {:reply, MapSet.to_list(peers), session}
+  end
 
-  # ===== #
-  # Async #
-  # ===== #
+  @doc """
+  Asynchronous
 
-  def handle_cast({:newcomer, name, room} = payload, %{me: me, peers: peers} = state) do
-    newcomer = {name, room}
+  ... more text
 
-    if newcomer == me or MapSet.member?(peers, newcomer) do
-      {:noreply, state}
+  """
+  def handle_cast({:newcomer, newcomer}, {owner, _, _} = session) when newcomer == owner do
+    {:noreply, session}
+  end
+
+  def handle_cast({:newcomer, newcomer} = payload, {owner, nonces, peers} = session) do
+    if MapSet.member?(peers, newcomer) do
+      {:noreply, session}
     else
-      log("#{name} joined from #{room}", "Alert", "👋🏻", :green)
+      log("#{newcomer} has joined", "Alert", "👋🏻", :green)
 
-      GenServer.cast(newcomer, {:peers, peers}) # Send newcomer list of all known peers
+      GenServer.cast(address(newcomer), {:peers, peers})
+      forward(peers, payload)
 
-      forward(peers, payload) # Broadcast to friends
-
-      {
-        :noreply,
-        %{state | peers: MapSet.put(peers, {name, room})}
-      }
+      {:noreply, {owner, nonces, MapSet.put(peers, newcomer)}}
     end
   end
 
   # incoming peer addresses
-  def handle_cast({:peers, external}, %{peers: internal} = state) do
-    {
-      :noreply,
-      %{state | peers: MapSet.merge(external, internal)}
-    }
-  end
+  def handle_cast({:peers, external}, {owner, nonces, internal} = session) do
+    external
+    |> MapSet.difference(internal)
+    |> MapSet.size()
+    |> case do
+      0 ->
+        {:noreply, session}
 
-  def handle_cast({:msg, name, room, nonce, text} = msg, %{nonces: nonces, peers: peers} = state) do
-    if MapSet.member?(nonces, nonce) do
-      {:noreply, state}
-    else
-      log(text, name, "🗣")
-      forward(peers, msg)
+      count ->
+        log("Attached to #{count} new peer(s)", "Alert", "👋🏻", :green)
 
-      {
-        :noreply,
-        %{state | peers: MapSet.put(peers, {name, room})}
-      }
+        {:noreply, {owner, nonces, MapSet.union(internal, external)}}
     end
   end
 
-  def handle_cast({:dm, name, room, nonce, text}, %{nonces: nonces, peers: peers} = state) do
-    unless MapSet.member?(nonces, nonce), do: log(name, text, "🙈", :blue)
+  def handle_cast({:msg, peer, nonce, text} = msg, {owner, nonces, peers} = session) do
+    if MapSet.member?(nonces, nonce) do
+      {:noreply, session}
+    else
+      log(text, peer, "😁")
+      forward(peers, msg)
+      {:noreply, {owner, MapSet.put(nonces, nonce), peers}}
+    end
+  end
 
-    {
-      :noreply,
-      %{state | peers: MapSet.put(peers, {name, room})}
-    }
+  def handle_cast({:dm, sender, nonce, text}, {owner, nonces, peers} = session) do
+    unless MapSet.member?(nonces, nonce), do: log(text, sender, "🙈", :blue)
+
+    if MapSet.member?(peers, sender) do
+      {:noreply, session}
+    else
+      GenServer.cast(address(sender), {:peers, peers})
+      forward(peers, {:newcomer, sender})
+      {:noreply, {owner, nonces, MapSet.put(peers, sender)}}
+    end
   end
 
   # ======= #
   # Helpers #
   # ======= #
 
-  def log(text, sender, icon, colour \\ :white) do
-    IO.puts("---")
-    IO.puts("#{icon} #{sender}")
+  def me, do: to_string(node())
 
-    text
-    |> colorize(colour)
+  def address(room) when is_bitstring(room), do: room |> String.to_atom() |> address()
+  def address(room), do: {:chat, room}
+
+  def log(text, sender, icon, colour \\ :white) do
+    [colour, "#{icon} #{sender}\n#{text}\n"]
+    |> IO.ANSI.format(true)
     |> IO.puts()
   end
-
-  def colorize(text, colour), do: IO.ANSI.format([colour, text], true)
 
   def nonce, do: :crypto.strong_rand_bytes(8)
 
   def forward(peers, payload) do
-    Enum.each(peers, fn(peer) ->
-      GenServer.cast(peer, payload)
+    Enum.each(peers, fn peer ->
+      peer
+      |> address()
+      |> GenServer.cast(payload)
     end)
   end
 end
