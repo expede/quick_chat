@@ -13,9 +13,11 @@ defmodule QuickChat.Server do
   end
 
   @doc """
-  Synchronous
+  Synchronous actions specified by the `GenServer.handle_call/3` callback
 
-  ... more text
+  * `{:broadcast, text}` - Send all peers text
+  * `{:send_dm, text}` - Send text to one peer only
+  * `:list_peers` - Return a list of all currently-known peers
 
   """
   def handle_call({:broadcast, text}, {from, _}, {owner, nonces, peers}) when from == owner do
@@ -34,14 +36,13 @@ defmodule QuickChat.Server do
     GenServer.cast(address(to), {:dm, me(), new_nonce, text})
 
     unless MapSet.member?(peers, to) do
-      GenServer.cast(address(to), {:peers, peers})
+      GenServer.cast(address(to), {:add_peers, peers})
       forward(peers, {:newcomer, to})
     end
 
     {:reply, :ok, {owner, MapSet.put(nonces, new_nonce), MapSet.put(peers, to)}}
   end
 
-  # Public
   def handle_call(:list_peers, _from, {_, _, peers} = session) do
     {:reply, MapSet.to_list(peers), session}
   end
@@ -62,15 +63,14 @@ defmodule QuickChat.Server do
     else
       log("#{newcomer} has joined", "Alert", "👋🏻", :green)
 
-      GenServer.cast(address(newcomer), {:peers, peers})
+      GenServer.cast(address(newcomer), {:add_peers, peers})
       forward(peers, payload)
 
       {:noreply, {owner, nonces, MapSet.put(peers, newcomer)}}
     end
   end
 
-  # incoming peer addresses
-  def handle_cast({:peers, external}, {owner, nonces, internal} = session) do
+  def handle_cast({:add_peers, external}, {owner, nonces, internal} = session) do
     external
     |> MapSet.difference(internal)
     |> MapSet.size()
@@ -101,7 +101,7 @@ defmodule QuickChat.Server do
     if MapSet.member?(peers, sender) do
       {:noreply, session}
     else
-      GenServer.cast(address(sender), {:peers, peers})
+      GenServer.cast(address(sender), {:add_peers, peers})
       forward(peers, {:newcomer, sender})
       {:noreply, {owner, nonces, MapSet.put(peers, sender)}}
     end
