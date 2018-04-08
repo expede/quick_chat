@@ -97,33 +97,31 @@ defmodule QuickChat.Server do
 
   def handle_cast({:dm, sender, nonce, text}, {owner, nonces, peers} = session) do
     unless MapSet.member?(nonces, nonce), do: log(text, sender, "🙈", :blue)
-
-    if MapSet.member?(peers, sender) do
-      {:noreply, session}
-    else
-      GenServer.cast(address(sender), {:add_peers, peers})
-      forward(peers, {:newcomer, sender})
-      {:noreply, {owner, nonces, MapSet.put(peers, sender)}}
-    end
+    handle_cast({:newcomer, sender}, session)
   end
 
   # ======= #
   # Helpers #
   # ======= #
 
+  @spec me() :: String.t()
   def me, do: to_string(node())
 
+  @spec address(atom() | String.t()) :: {:chat, atom()}
   def address(room) when is_bitstring(room), do: room |> String.to_atom() |> address()
   def address(room), do: {:chat, room}
 
+  @spec log(String.t(), String.t(), String.t(), atom()) :: :ok
   def log(text, sender, icon, colour \\ :white) do
     [colour, "#{icon} #{sender}\n#{text}\n"]
     |> IO.ANSI.format(true)
     |> IO.puts()
   end
 
+  @spec nonce() :: String.t()
   def nonce, do: :crypto.strong_rand_bytes(8)
 
+  @spec forward([String.t() | atom(), any()]) :: :ok
   def forward(peers, payload) do
     Enum.each(peers, fn peer ->
       peer
