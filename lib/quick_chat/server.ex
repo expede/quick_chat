@@ -121,7 +121,7 @@ defmodule QuickChat.Server do
   @spec nonce() :: String.t()
   def nonce, do: :crypto.strong_rand_bytes(8)
 
-  @spec forward([String.t() | atom(), any()]) :: :ok
+  @spec forward([String.t() | atom()], any()) :: :ok
   def forward(peers, payload) do
     Enum.each(peers, fn peer ->
       peer
